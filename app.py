@@ -36,7 +36,7 @@ st.markdown("### 📷 설비 디스플레이 실시간 촬영")
 st.write("스마트폰 카메라로 설비 화면을 촬영해 주세요.")
 
 # Streamlit 내장 카메라 캡처 기능 (모바일 기기에서 바로 카메라 구동)
-camera_image = st.camera_image("설비 화면 촬영하기")
+camera_image = st.camera_input("설비 화면 촬영하기")
 
 if camera_image is not None:
     # 촬영된 이미지 읽기
