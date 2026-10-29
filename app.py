@@ -85,7 +85,12 @@ else:
     uploaded_worker_file = st.file_uploader("작업일지 또는 부품 사진 업로드", type=["png", "jpg", "jpeg"], key="worker_uploader")
     
     if uploaded_worker_file is not None:
-        worker_image = Image.open(uploaded_worker_file)
+        import io
+
+# 업로드된 파일을 바이트로 안전하게 읽어서 이미지로 변환
+bytes_data = uploaded_worker_file.read()
+worker_image = Image.open(io.BytesIO(bytes_data))
+
         
         col1, col2 = st.columns(2)
         
