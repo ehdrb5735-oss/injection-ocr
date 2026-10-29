@@ -1,205 +1,47 @@
 import streamlit as st
-import cv2
-import numpy as np
+import google.generativeai as genai
 from PIL import Image
-from streamlit_drawable_canvas import st_canvas
-import easyocr
+import pandas as pd
+import io
 
-st.set_page_config(page_title="사출조건 자주검사 스마트 비전 시스템", layout="centered")
+# 페이지 기본 설정 (가장 처음에 위치해야 함)
+st.set_page_config(
+    page_title="작업일지 OCR 자동화",
+    page_icon="📄",
+    layout="wide"
+)
 
-# --- [1] OCR 모델 로드 (캐싱 적용) ---
-@st.cache_resource
-def load_ocr_reader():
-    return easyocr.Reader(['en'], gpu=False)
+# 타이틀
+st.title("📄 작업일지 OCR 및 엑셀 변환 시스템")
+st.write("수기 작업일지 사진을 업로드하면 AI가 텍스트를 추출하여 데이터로 변환합니다.")
 
-with st.spinner("AI OCR 엔진을 불러오는 중입니다. 잠시만 기다려 주세요..."):
-    reader = load_ocr_reader()
+# 사이드바 설정 (API 키 입력 등)
+st.sidebar.header("설정")
+api_key = st.sidebar.text_input("Gemini API Key", type="password")
 
-# --- [2] 세션 상태 초기화 ---
-if "is_admin" not in st.session_state:
-    st.session_state.is_admin = False
-
-if "ref_image_pil" not in st.session_state:
-    st.session_state.ref_image_pil = None
-
-if "mapping_boxes" not in st.session_state:
-    st.session_state.mapping_boxes = {}
-
-TARGET_ITEMS = ["사출 1차 압력", "사출 1차 속도", "사출 1차 위치", "계량 1차 RPM", "보압 1차 압력"]
-
-st.title("📸 사출조건 자주검사 스마트 비전 시스템")
-
-# --- [3] 사이드바: 관리자 로그인 ---
-st.sidebar.header("🔐 시스템 관리")
-if not st.session_state.is_admin:
-    admin_pw = st.sidebar.text_input("관리자 비밀번호 입력", type="password")
-    if st.sidebar.button("관리자 로그인"):
-        if admin_pw == "admin1234":
-            st.session_state.is_admin = True
-            st.sidebar.success("관리자 로그인 성공!")
-            st.rerun()
-        else:
-            st.sidebar.error("비밀번호가 틀렸습니다.")
+if not api_key:
+    st.warning("⚠️ 사이드바에 Google Gemini API Key를 입력해주세요.")
 else:
-    st.sidebar.success("👑 관리자 모드 활성화됨")
-    if st.sidebar.button("로그아웃"):
-        st.session_state.is_admin = False
-        st.rerun()
-
-st.sidebar.divider()
-st.sidebar.info("💡 **OCR 인식률 개선 안내**:\n- 지정된 박스 영역의 이미지를 흑백 이진화(Thresholding) 처리하여 숫자 인식률을 대폭 끌어올렸습니다.")
-
-# --- [4] 이미지 자동 정렬 (왜곡 보정) 함수 ---
-def align_images(ref_img, target_img):
-    try:
-        ref_gray = cv2.cvtColor(ref_img, cv2.COLOR_RGB2GRAY)
-        target_gray = cv2.cvtColor(target_img, cv2.COLOR_RGB2GRAY)
-        
-        orb = cv2.ORB_create(500)
-        kp1, des1 = orb.detectAndCompute(ref_gray, None)
-        kp2, des2 = orb.detectAndCompute(target_gray, None)
-        
-        if des1 is None or des2 is None or len(kp1) < 10 or len(kp2) < 10:
-            return target_img
-            
-        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-        matches = bf.match(des1, des2)
-        matches = sorted(matches, key=lambda x: x.distance)
-        
-        good_matches = matches[:int(len(matches) * 0.25)]
-        if len(good_matches) < 4:
-            return target_img
-            
-        src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-        dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-        
-        M, mask = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC, 5.0)
-        if M is None:
-            return target_img
-            
-        h, w, _ = ref_img.shape
-        aligned = cv2.warpPerspective(target_img, M, (w, h))
-        return aligned
-    except Exception:
-        return target_img
-
-# --- [5] 관리자 전용 화면 ---
-if st.session_state.is_admin:
-    st.markdown("---")
-    st.subheader("👑 [관리자 전용] 표준 사진 마우스 드래그 위치 지정")
-    st.write("표준 HMI 사진을 올린 뒤, 항목을 선택하고 사진 위를 마우스로 드래그하여 해당 위치를 지정하세요.")
+    genai.configure(api_key=api_key)
     
-    ref_file = st.file_uploader("표준 HMI 기준 사진 업로드", type=["jpg", "jpeg", "png"], key="ref_upload_ocr_v2")
-    if ref_file is not None:
-        st.session_state.ref_image_pil = Image.open(ref_file)
-        st.success("표준 기준 사진이 등록되었습니다!")
+    # 파일 업로더
+    uploaded_file = st.file_uploader("작업일지 이미지를 선택하세요 (PNG, JPG)", type=["png", "jpg", "jpeg"])
+    
+    if uploaded_file is not None:
+        image = Image.open(uploaded_file)
+        st.image(image, caption="업로드된 작업일지", use_container_width=True)
         
-    if st.session_state.ref_image_pil is not None:
-        selected_item = st.selectbox("🎯 위치를 지정할 검사 항목 선택", TARGET_ITEMS)
-        
-        img_w, img_h = st.session_state.ref_image_pil.size
-        display_width = min(img_w, 600)
-        display_height = int(img_h * (display_width / img_w))
-        
-        canvas_result = st_canvas(
-            fill_color="rgba(0, 255, 0, 0.3)",
-            stroke_width=2,
-            stroke_color="#FF0000",
-            background_image=st.session_state.ref_image_pil.resize((display_width, display_height)),
-            update_streamlit=True,
-            drawing_mode="rect",
-            height=display_height,
-            width=display_width,
-            key="canvas_drawing_ocr_v2",
-        )
-        
-        if canvas_result.json_data is not None:
-            objects = canvas_result.json_data["objects"]
-            if len(objects) > 0:
-                obj = objects[-1]
-                left, top, width, height = obj["left"], obj["top"], obj["width"], obj["height"]
-                
-                x1 = left / display_width
-                y1 = top / display_height
-                x2 = (left + width) / display_width
-                y2 = (top + height) / display_height
-                
-                if st.button(f"💾 [{selected_item}] 위치 저장하기"):
-                    st.session_state.mapping_boxes[selected_item] = [x1, y1, x2, y2]
-                    st.success(f"[{selected_item}] 위치가 성공적으로 저장되었습니다!")
+        if st.button("🚀 OCR 분석 실행", type="primary"):
+            with st.spinner("AI가 작업일지를 분석 중입니다..."):
+                try:
+                    # 모델 설정 (Gemini Flash 등 활용)
+                    model = genai.GenerativeModel('gemini-2.5-flash')
                     
-        if st.session_state.mapping_boxes:
-            st.markdown("📋 **현재 등록된 항목별 위치 목록:**")
-            for item, box in st.session_state.mapping_boxes.items():
-                st.write(f"- **{item}**: 지정완료 (영역: [{box[0]:.2f}, {box[1]:.2f}, {box[2]:.2f}, {box[3]:.2f}])")
-    st.markdown("---")
-
-# --- [6] 현장 작업자 모드: 사진 업로드 및 OCR 추출 ---
-st.markdown("### 📁 현장 설비 디스플레이 사진 업로드")
-st.write("현장에서 촬영한 사진을 업로드해 주세요. 지정된 영역의 숫자를 AI가 정밀 판독합니다.")
-
-work_file = st.file_uploader("현장 촬영 사진 업로드", type=["jpg", "jpeg", "png"], key="work_upload_ocr_v2")
-
-if work_file is not None:
-    work_img = Image.open(work_file)
-    work_np = np.array(work_img)
-    
-    ref_np = np.array(st.session_state.ref_image_pil) if st.session_state.ref_image_pil else None
-    
-    if ref_np is not None:
-        st.info("🔄 표준 기준 사진을 대조하여 비스듬한 각도와 왜곡을 자동 보정하는 중입니다...")
-        processed_img = align_images(ref_np, work_np)
-    else:
-        processed_img = work_np
-        st.warning("⚠️ [알림] 등록된 표준 기준 사진이 없습니다. 관리자 로그인 후 기준 사진과 위치를 지정해 주세요.")
-        
-    h, w, _ = processed_img.shape
-    img_draw = processed_img.copy()
-    
-    st.subheader("🔍 AI OCR 실제 데이터 인식 결과")
-    
-    results = []
-    if st.session_state.mapping_boxes:
-        for name, box in st.session_state.mapping_boxes.items():
-            x1, y1, x2, y2 = int(box[0]*w), int(box[1]*h), int(box[2]*w), int(box[3]*h)
-            
-            x1, x2 = max(0, x1), min(w, x2)
-            y1, y2 = max(0, y1), min(h, y2)
-            
-            # 1. 박스 영역 크롭
-            roi = processed_img[y1:y2, x1:x2]
-            
-            extracted_text = "인식 실패"
-            if roi.size > 0:
-                # 2. OCR 전처리 강화 (그레이스케일 변환 후 Otsu 이진화 적용으로 숫자 윤곽 선명화)
-                roi_gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
-                # 크기를 2배로 확대하여 OCR 인식률 향상
-                roi_resized = cv2.resize(roi_gray, (0, 0), fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-                _, roi_thresh = cv2.threshold(roi_resized, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                
-                # 3. EasyOCR로 전처리된 이미지 전달
-                ocr_results = reader.readtext(roi_thresh)
-                text_list = [res[1] for res in ocr_results]
-                if text_list:
-                    extracted_text = " ".join(text_list)
-            
-            cv2.rectangle(img_draw, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(img_draw, f"{name}: {extracted_text}", (x1, max(20, y1-5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-            
-            results.append({"name": name, "val": extracted_text, "status": "정상", "color": "green"})
-    else:
-        st.info("💡 아직 관리자가 지정한 위치(매핑 박스)가 없습니다. 관리자 모드에서 위치를 먼저 지정해 주세요.")
-
-    st.image(img_draw, use_container_width=True, caption="전처리(확대 및 이진화)가 적용된 상태에서 AI OCR이 숫자를 판독한 화면입니다.")
-    
-    if results:
-        st.divider()
-        st.subheader("📊 검사 항목별 실제 인식 데이터")
-        for r in results:
-            st.markdown(f"- **{r['name']}**: **{r['val']}** ➔ <span style='color:{r['color']};'>**{r['status']}**</span>", unsafe_allow_html=True)
-
-    st.divider()
-    if st.button("📤 구글 스프레드시트 최종 반영", type="primary"):
-        st.success("실제 OCR 판독 데이터가 구글 스프레드시트 대시보드에 성공적으로 기록되었습니다!")
-else:
-    st.info("💡 현장에서 촬영한 사진을 업로드해 주세요.")
+                    prompt = "이 작업일지 이미지의 내용을 분석해서 주요 항목과 텍스트를 마크다운 표 형태로 정리해줘."
+                    response = model.generate_content([image, prompt])
+                    
+                    st.success("✅ 분석 완료!")
+                    st.markdown(response.text)
+                    
+                except Exception as e:
+                    st.error(f"분석 중 오류가 발생했습니다: {e}")
