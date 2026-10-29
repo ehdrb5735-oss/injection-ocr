@@ -7,7 +7,7 @@ import json
 # ==========================================
 # ⚙️ [관리자 설정] 여기에 본인의 Gemini API Key를 입력해 두세요!
 # ==========================================
-MASTER_API_KEY = "YOUR_GEMINI_API_KEY"  # <-- 여기에 발급받은 키를 넣으세요
+MASTER_API_KEY = "alrusq13323w"  # <-- 여기에 발급받은 키를 넣으세요
 
 # 페이지 설정
 st.set_page_config(
