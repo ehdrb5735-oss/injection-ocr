@@ -58,7 +58,7 @@ def enhance_image(img_np):
 
 # --- [4] 메인 화면: 카메라 촬영 ---
 st.markdown("### 📷 설비 디스플레이 실시간 촬영 및 보정")
-camera_image = st.camera_image("설비 화면 촬영하기")
+camera_image = st.camera_input("설비 화면 촬영하기")
 
 if camera_image is not None:
     # 촬영된 이미지 로드
